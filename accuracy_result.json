@@ -1,0 +1,14 @@
+{
+  "tests/test_outer.py::test_outer[dtype0-1-32]": {
+    "params": {
+      "dtype": "torch.float32",
+      "M": 1,
+      "N": 32
+    },
+    "result": "passed",
+    "opname": [
+      "outer"
+    ],
+    "reason": null
+  }
+}

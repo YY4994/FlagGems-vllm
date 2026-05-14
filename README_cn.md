@@ -41,5 +41,30 @@ x = torch.randn(1024, device='cuda')
 y = flaggems_vllm.ops.relu(x)
 ```
 
+## Tests 与 Benchmark 快速使用
+
+下面命令已在当前仓库验证通过，可用于安装后的快速检查。
+
+### 运行 tests
+
+```shell
+cd /workspace/FlagGems-vllm
+pytest -q tests --collect-only
+pytest -q tests/test_outer.py --quick
+```
+
+### 运行 benchmark
+
+```shell
+cd /workspace/FlagGems-vllm
+pytest -q benchmark --collect-only
+pytest -q benchmark/test_outer.py::test_outer --level core --iter 1 --warmup 1
+```
+
+### 说明
+
+- 大多数 tests/benchmark 需要 CUDA GPU 环境。
+- 建议先执行 `--collect-only`，快速确认导入与用例发现是否正常。
+
 
 本项目采用 [Apache (Version 2.0) License](./LICENSE) 授权许可。

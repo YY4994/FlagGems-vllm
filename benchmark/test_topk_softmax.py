@@ -2,7 +2,7 @@ import pytest
 import torch
 
 import flaggems_vllm
-import flaggems_vllm.fused as fused
+import flaggems_vllm.ops as fused
 
 from . import base, utils
 

@@ -23,11 +23,17 @@ class ConfigLoader(object):
             # and is reserved from being an attr for vendor customizability
             self.arch_specialized_yaml_config = None
             self.arch_heuristics_config = None
-            self.vendor_primitive_yaml_config = self.get_vendor_tune_config()
-            self.default_primitive_yaml_config = self.get_default_tune_config()
-            self.vendor_heuristics_config = self.get_vendor_heuristics_config()
+            self.vendor_primitive_yaml_config = (
+                self.get_vendor_tune_config() or {}
+            )
+            self.default_primitive_yaml_config = (
+                self.get_default_tune_config() or {}
+            )
+            self.vendor_heuristics_config = (
+                self.get_vendor_heuristics_config() or {}
+            )
             self.default_heuristics_config = (
-                self.get_default_heuristics_config()
+                self.get_default_heuristics_config() or {}
             )
             try:
                 if backend.BackendArchEvent().has_arch:
@@ -192,8 +198,10 @@ class ConfigLoader(object):
             current_op_configs = self.arch_specialized_yaml_config[op_name]
         elif op_name in self.vendor_primitive_yaml_config:
             current_op_configs = self.vendor_primitive_yaml_config[op_name]
-        else:
+        elif op_name in self.default_primitive_yaml_config:
             current_op_configs = self.default_primitive_yaml_config[op_name]
+        else:
+            return []
 
         configs = []
         if len(current_op_configs) == 0:
