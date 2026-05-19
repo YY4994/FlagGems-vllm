@@ -34,11 +34,28 @@ pip install  .
 import torch
 import flaggems_vllm
 
-# 创建张量
-x = torch.randn(1024, device='cuda')
+# 构造 MoE 路由所需的 topk_ids
+num_tokens = 128
+topk = 2
+num_experts = 16
+block_size = 32
 
-# 应用 ReLU 激活函数
-y = flaggems_vllm.ops.relu(x)
+topk_ids = torch.randint(
+	low=0,
+	high=num_experts,
+	size=(num_tokens, topk),
+	device='cuda',
+	dtype=torch.int32,
+)
+
+# 按 expert 和 block_size 对 token 做对齐
+sorted_ids, expert_ids, num_tokens_post_pad = flaggems_vllm.ops.moe_align_block_size(
+	topk_ids=topk_ids,
+	block_size=block_size,
+	num_experts=num_experts,
+)
+
+print(sorted_ids.shape, expert_ids.shape, num_tokens_post_pad)
 ```
 
 ## Tests 与 Benchmark 快速使用
@@ -50,7 +67,7 @@ y = flaggems_vllm.ops.relu(x)
 ```shell
 cd /workspace/FlagGems-vllm
 pytest -q tests --collect-only
-pytest -q tests/test_outer.py --quick
+pytest -q tests/test_moe_align_block_size.py --quick
 ```
 
 ### 运行 benchmark
@@ -58,7 +75,7 @@ pytest -q tests/test_outer.py --quick
 ```shell
 cd /workspace/FlagGems-vllm
 pytest -q benchmark --collect-only
-pytest -q benchmark/test_outer.py::test_outer --level core --iter 1 --warmup 1
+pytest -q benchmark/test_moe_align_block_size_triton.py::test_moe_align_block_size_triton --level core --iter 1 --warmup 1
 ```
 
 ### 说明

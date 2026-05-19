@@ -32,11 +32,28 @@ pip install  .
 import torch
 import flaggems_vllm
 
-# Create a tensor
-x = torch.randn(1024, device='cuda')
+# Prepare a simple topk_ids tensor for MoE routing
+num_tokens = 128
+topk = 2
+num_experts = 16
+block_size = 32
 
-# Apply ReLU activation
-y = flaggems_vllm.ops.relu(x)
+topk_ids = torch.randint(
+	low=0,
+	high=num_experts,
+	size=(num_tokens, topk),
+	device='cuda',
+	dtype=torch.int32,
+)
+
+# Align tokens by expert and block size
+sorted_ids, expert_ids, num_tokens_post_pad = flaggems_vllm.ops.moe_align_block_size(
+	topk_ids=topk_ids,
+	block_size=block_size,
+	num_experts=num_experts,
+)
+
+print(sorted_ids.shape, expert_ids.shape, num_tokens_post_pad)
 ```
 
 ## Tests and Benchmark Quick Start
@@ -48,7 +65,7 @@ The following commands are verified in this repository and can be used for quick
 ```shell
 cd /workspace/FlagGems-vllm
 pytest -q tests --collect-only
-pytest -q tests/test_outer.py --quick
+pytest -q tests/test_moe_align_block_size.py --quick
 ```
 
 ### Run benchmark
@@ -56,7 +73,7 @@ pytest -q tests/test_outer.py --quick
 ```shell
 cd /workspace/FlagGems-vllm
 pytest -q benchmark --collect-only
-pytest -q benchmark/test_outer.py::test_outer --level core --iter 1 --warmup 1
+pytest -q benchmark/test_moe_align_block_size_triton.py::test_moe_align_block_size_triton --level core --iter 1 --warmup 1
 ```
 
 ### Notes
