@@ -17,7 +17,7 @@ FlagGems-vllm is a high-performance deep learning operator library implemented u
 ## Quick Installation
 ### Install Dependencies
 ```shell
-pip install -U scikit-build-core>=0.11 pybind11 ninja cmake
+pip install -U 'scikit-build-core>=0.11' pybind11 ninja cmake
 ```
 ### Install FlagGems-vllm
 ```shell

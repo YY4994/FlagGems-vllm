@@ -19,7 +19,7 @@ FlagGems-vllm 是一个使用 OpenAI 推出的[Triton 编程语言](https://gith
 ### 安装依赖
 
 ```shell
-pip install -U scikit-build-core>=0.11 pybind11 ninja cmake
+pip install -U 'scikit-build-core>=0.11' pybind11 ninja cmake
 ```
 ### 安装FlagGems-vllm
 ```shell
