@@ -201,6 +201,7 @@ def all_registered_keys():
 
 
 __all__ = [
+    "SUPPORTED_FP8_DTYPE",
     "enable",
     "only_enable",
     "use_dnn",
