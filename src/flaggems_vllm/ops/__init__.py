@@ -69,6 +69,7 @@ from flaggems_vllm.ops.mul import mul, mul_
 from flaggems_vllm.ops.mv import mv
 from flaggems_vllm.ops.outer import outer
 from flaggems_vllm.ops.pack_seq import pack_seq_triton
+from flaggems_vllm.ops.parallel_nsa_compression import parallel_nsa_compression
 from flaggems_vllm.ops.per_token_group_quant_fp8 import (
     SUPPORTED_FP8_DTYPE,
     per_token_group_quant_fp8,
@@ -152,6 +153,7 @@ __all__ = [
     "mv",
     "outer",
     "outplace_fused_experts",
+    "parallel_nsa_compression",
     "pack_seq_triton",
     "per_token_group_quant_fp8",
     "reglu",
