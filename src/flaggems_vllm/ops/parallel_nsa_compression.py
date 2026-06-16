@@ -5,6 +5,9 @@
 # For a list of all contributors, visit:
 #   https://github.com/fla-org/flash-linear-attention/graphs/contributors
 
+import os
+import warnings
+
 import torch
 import triton
 import triton.language as tl
@@ -19,6 +22,234 @@ from flaggems_vllm.ops.FLA import (
     prepare_token_indices,
 )
 from flaggems_vllm.ops.FLA.utils import check_shared_mem, input_guard
+from flaggems_vllm.utils.triton_version_utils import has_triton_tle
+
+# ---------------------------------------------------------------------------
+# TLE (Triton Language Extensions) conditional import
+# ---------------------------------------------------------------------------
+HAS_TLE = False
+tle = None
+if has_triton_tle(3, 6, 0):
+    try:
+        import triton.experimental.tle.language as tle
+
+        HAS_TLE = True
+    except ImportError:
+        tle = None
+        HAS_TLE = False
+else:
+    tle = None
+    HAS_TLE = False
+
+
+def _can_use_tle():
+    return HAS_TLE
+
+
+# ---------------------------------------------------------------------------
+# TLE-Struct fwd kernel — uses tle.gpu.warp_specialize + tle.pipe for
+# producer/consumer pipelining.
+# ---------------------------------------------------------------------------
+@triton.jit
+def _nsa_compression_tle_producer(
+    k_writer,
+    v_writer,
+    k, v,
+    boc, i_h, TC, NC,
+    H: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BC: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    i_v: tl.constexpr,
+):
+    i_v32 = i_v.to(tl.int32)
+    n_iter = tl.cdiv(NC, BC)
+    for i_iter in tl.range(n_iter):
+        i_c = i_iter * BC
+
+        k_slot = k_writer.acquire(i_iter)
+        p_k = tl.make_block_ptr(
+            k + (boc * H + i_h) * K,
+            (K, TC), (1, H*K), (0, i_c),
+            (BK, BC), (0, 1)
+        )
+        b_k = tl.load(p_k, boundary_check=(0, 1))
+        tl.store(tle.gpu.local_ptr(k_slot.k), b_k)
+        k_writer.commit(i_iter)
+
+        v_slot = v_writer.acquire(i_iter)
+        p_v = tl.make_block_ptr(
+            v + (boc * H + i_h) * V,
+            (TC, V), (H*V, 1), (i_c, i_v32 * BV),
+            (BC, BV), (1, 0)
+        )
+        b_v = tl.load(p_v, boundary_check=(0, 1))
+        tl.store(tle.gpu.local_ptr(v_slot.v), b_v)
+        v_writer.commit(i_iter)
+
+
+@triton.jit
+def _nsa_compression_tle_consumer(
+    k_reader,
+    v_reader,
+    q, o, lse,
+    scale,
+    bos, i_t, i_h, G, HQ, K, NC,
+    i_v: tl.constexpr,
+    BC: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    V: tl.constexpr,
+):
+    p_q = tl.make_block_ptr(
+        q + (bos + i_t) * HQ * K,
+        (HQ, K), (K, 1), (i_h * G, 0), (G, BK), (1, 0)
+    )
+    b_q = tl.load(p_q, boundary_check=(0, 1))
+    b_q = (b_q * scale).to(b_q.dtype)
+
+    p_o = tl.make_block_ptr(
+        o + (bos + i_t) * HQ * V,
+        (HQ, V), (V, 1), (i_h * G, i_v * BV), (G, BV), (1, 0)
+    )
+
+    b_o = tl.zeros([G, BV], dtype=tl.float32)
+    b_m = tl.full([G], float('-inf'), dtype=tl.float32)
+    b_acc = tl.zeros([G], dtype=tl.float32)
+
+    n_iter = tl.cdiv(NC, BC)
+    for i_iter in tl.range(n_iter):
+        i_c = i_iter * BC
+        o_c = i_c + tl.arange(0, BC)
+
+        k_ready = k_reader.wait(i_iter)
+        v_ready = v_reader.wait(i_iter)
+
+        b_k = tl.load(tle.gpu.local_ptr(k_ready.slot.k))
+        b_v = tl.load(tle.gpu.local_ptr(v_ready.slot.v))
+
+        b_s = tl.dot(b_q, b_k)
+        b_s = tl.where((o_c < NC)[None, :], b_s, float('-inf'))
+
+        b_m, b_mp = tl.maximum(b_m, tl.max(b_s, 1)), b_m
+        b_r = exp(b_mp - b_m)
+        b_p = exp(b_s - b_m[:, None])
+        b_acc = tl.math.fma(b_acc, b_r, tl.sum(b_p, 1))
+        b_o = tl.math.fma(b_o, b_r[:, None], tl.dot(b_p.to(b_q.dtype), b_v))
+        b_m = b_mp
+
+        k_reader.release(i_iter)
+        v_reader.release(i_iter)
+
+    if NC == 0:
+        b_lse = tl.zeros([G], dtype=tl.float32)
+    else:
+        b_o = b_o / b_acc[:, None]
+        b_lse = b_m + log(b_acc)
+
+    tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
+    if i_v == 0:
+        tl.store(
+            lse + (bos + i_t) * HQ + i_h * G + tl.arange(0, G),
+            b_lse.to(lse.dtype.element_ty),
+        )
+
+
+@triton.jit
+def parallel_nsa_compression_fwd_tle_struct_kernel(
+    q, k, v, o, lse,
+    scale,
+    cu_seqlens,
+    token_indices,
+    chunk_offsets,
+    T,
+    H: tl.constexpr,
+    HQ: tl.constexpr,
+    G: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BC: tl.constexpr,
+    BS: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    NCONSUMER: tl.constexpr,
+    IS_VARLEN: tl.constexpr,
+):
+    i_t, i_v, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    i_b, i_h = i_bh // H, i_bh % H
+
+    if IS_VARLEN:
+        i_n, i_t = tl.load(token_indices + i_t * 2).to(tl.int32), tl.load(token_indices + i_t * 2 + 1).to(tl.int32)
+        bos, eos = tl.load(cu_seqlens + i_n).to(tl.int32), tl.load(cu_seqlens + i_n + 1).to(tl.int32)
+        T = eos - bos
+        boc = tl.load(chunk_offsets + i_n).to(tl.int32)
+    else:
+        bos, eos = i_b * T, i_b * T + T
+        boc = i_b * tl.cdiv(T, BS)
+
+    TC = tl.cdiv(T, BS)
+    NC = (i_t + 1) // BS
+
+    k_smem = tle.gpu.alloc(
+        [2, BK, BC],
+        dtype=k.dtype.element_ty,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    v_smem = tle.gpu.alloc(
+        [2, BC, BV],
+        dtype=v.dtype.element_ty,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+
+    k_pipe = tle.pipe(
+        capacity=2,
+        scope="cta",
+        name="nsa_k_pipe",
+        k=k_smem,
+    )
+    v_pipe = tle.pipe(
+        capacity=2,
+        scope="cta",
+        name="nsa_v_pipe",
+        v=v_smem,
+    )
+
+    tle.gpu.warp_specialize(
+        [
+            (
+                _nsa_compression_tle_producer,
+                (
+                    k_pipe.writer(),
+                    v_pipe.writer(),
+                    k, v,
+                    boc, i_h, TC, NC,
+                    H, K, V,
+                    BC, BK, BV,
+                    i_v,
+                ),
+            ),
+            (
+                _nsa_compression_tle_consumer,
+                (
+                    k_pipe.reader(),
+                    v_pipe.reader(),
+                    q, o, lse,
+                    scale,
+                    bos, i_t, i_h, G, HQ, K, NC,
+                    i_v,
+                    BC, BK, BV, V,
+                ),
+            ),
+        ],
+        worker_num_warps=[NCONSUMER],
+        worker_num_regs=[160],
+    )
 
 # ===========================================================================
 # Forward kernel
@@ -429,7 +660,7 @@ def parallel_nsa_compression_fwd(
     B, T, HQ, K, V = *q.shape, v.shape[-1]
     H = k.shape[2]
     G = HQ // H
-    BS = block_size
+    BC = BS = block_size
     if check_shared_mem("hopper", q.device.index):
         BK = min(256, triton.next_power_of_2(K))
         BV = min(256, triton.next_power_of_2(V))
@@ -448,26 +679,78 @@ def parallel_nsa_compression_fwd(
     o = torch.empty(B, T, HQ, V, dtype=v.dtype, device=q.device)
     lse = torch.empty(B, T, HQ, dtype=torch.float, device=q.device)
 
-    parallel_nsa_compression_fwd_kernel[grid](
-        q=q,
-        k=k,
-        v=v,
-        o=o,
-        lse=lse,
-        scale=scale,
-        cu_seqlens=cu_seqlens,
-        token_indices=token_indices,
-        chunk_offsets=chunk_offsets,
-        T=T,
-        H=H,
-        HQ=HQ,
-        G=G,
-        K=K,
-        V=V,
-        BS=BS,
-        BK=BK,
-        BV=BV,
-    )
+    if _can_use_tle():
+        try:
+            parallel_nsa_compression_fwd_tle_struct_kernel[grid](
+                q=q,
+                k=k,
+                v=v,
+                o=o,
+                lse=lse,
+                scale=scale,
+                cu_seqlens=cu_seqlens,
+                token_indices=token_indices,
+                chunk_offsets=chunk_offsets,
+                T=T,
+                H=H,
+                HQ=HQ,
+                G=G,
+                K=K,
+                V=V,
+                BC=BC,
+                BS=BS,
+                BK=BK,
+                BV=BV,
+                NCONSUMER=4,
+                IS_VARLEN=cu_seqlens is not None,
+                num_warps=4,
+            )
+        except Exception as e:
+            warnings.warn(
+                "TLE compression kernel failed, falling back to original Triton kernel: "
+                + str(e)
+            )
+            parallel_nsa_compression_fwd_kernel[grid](
+                q=q,
+                k=k,
+                v=v,
+                o=o,
+                lse=lse,
+                scale=scale,
+                cu_seqlens=cu_seqlens,
+                token_indices=token_indices,
+                chunk_offsets=chunk_offsets,
+                T=T,
+                H=H,
+                HQ=HQ,
+                G=G,
+                K=K,
+                V=V,
+                BS=BS,
+                BK=BK,
+                BV=BV,
+            )
+    else:
+        parallel_nsa_compression_fwd_kernel[grid](
+            q=q,
+            k=k,
+            v=v,
+            o=o,
+            lse=lse,
+            scale=scale,
+            cu_seqlens=cu_seqlens,
+            token_indices=token_indices,
+            chunk_offsets=chunk_offsets,
+            T=T,
+            H=H,
+            HQ=HQ,
+            G=G,
+            K=K,
+            V=V,
+            BS=BS,
+            BK=BK,
+            BV=BV,
+        )
     return o, lse
 
 
