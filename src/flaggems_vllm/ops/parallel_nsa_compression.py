@@ -5,7 +5,6 @@
 # For a list of all contributors, visit:
 #   https://github.com/fla-org/flash-linear-attention/graphs/contributors
 
-import os
 import warnings
 
 import torch
@@ -54,8 +53,12 @@ def _can_use_tle():
 def _nsa_compression_tle_producer(
     k_writer,
     v_writer,
-    k, v,
-    boc, i_h, TC, NC,
+    k,
+    v,
+    boc,
+    i_h,
+    TC,
+    NC,
     H: tl.constexpr,
     K: tl.constexpr,
     V: tl.constexpr,
@@ -71,9 +74,7 @@ def _nsa_compression_tle_producer(
 
         k_slot = k_writer.acquire(i_iter)
         p_k = tl.make_block_ptr(
-            k + (boc * H + i_h) * K,
-            (K, TC), (1, H*K), (0, i_c),
-            (BK, BC), (0, 1)
+            k + (boc * H + i_h) * K, (K, TC), (1, H * K), (0, i_c), (BK, BC), (0, 1)
         )
         b_k = tl.load(p_k, boundary_check=(0, 1))
         tl.store(tle.gpu.local_ptr(k_slot.k), b_k)
@@ -82,8 +83,11 @@ def _nsa_compression_tle_producer(
         v_slot = v_writer.acquire(i_iter)
         p_v = tl.make_block_ptr(
             v + (boc * H + i_h) * V,
-            (TC, V), (H*V, 1), (i_c, i_v32 * BV),
-            (BC, BV), (1, 0)
+            (TC, V),
+            (H * V, 1),
+            (i_c, i_v32 * BV),
+            (BC, BV),
+            (1, 0),
         )
         b_v = tl.load(p_v, boundary_check=(0, 1))
         tl.store(tle.gpu.local_ptr(v_slot.v), b_v)
@@ -94,9 +98,17 @@ def _nsa_compression_tle_producer(
 def _nsa_compression_tle_consumer(
     k_reader,
     v_reader,
-    q, o, lse,
+    q,
+    o,
+    lse,
     scale,
-    bos, i_t, i_h, G, HQ, K, NC,
+    bos,
+    i_t,
+    i_h,
+    G,
+    HQ,
+    K,
+    NC,
     i_v: tl.constexpr,
     BC: tl.constexpr,
     BK: tl.constexpr,
@@ -104,19 +116,17 @@ def _nsa_compression_tle_consumer(
     V: tl.constexpr,
 ):
     p_q = tl.make_block_ptr(
-        q + (bos + i_t) * HQ * K,
-        (HQ, K), (K, 1), (i_h * G, 0), (G, BK), (1, 0)
+        q + (bos + i_t) * HQ * K, (HQ, K), (K, 1), (i_h * G, 0), (G, BK), (1, 0)
     )
     b_q = tl.load(p_q, boundary_check=(0, 1))
     b_q = (b_q * scale).to(b_q.dtype)
 
     p_o = tl.make_block_ptr(
-        o + (bos + i_t) * HQ * V,
-        (HQ, V), (V, 1), (i_h * G, i_v * BV), (G, BV), (1, 0)
+        o + (bos + i_t) * HQ * V, (HQ, V), (V, 1), (i_h * G, i_v * BV), (G, BV), (1, 0)
     )
 
     b_o = tl.zeros([G, BV], dtype=tl.float32)
-    b_m = tl.full([G], float('-inf'), dtype=tl.float32)
+    b_m = tl.full([G], float("-inf"), dtype=tl.float32)
     b_acc = tl.zeros([G], dtype=tl.float32)
 
     n_iter = tl.cdiv(NC, BC)
@@ -131,7 +141,7 @@ def _nsa_compression_tle_consumer(
         b_v = tl.load(tle.gpu.local_ptr(v_ready.slot.v))
 
         b_s = tl.dot(b_q, b_k)
-        b_s = tl.where((o_c < NC)[None, :], b_s, float('-inf'))
+        b_s = tl.where((o_c < NC)[None, :], b_s, float("-inf"))
 
         b_m, b_mp = tl.maximum(b_m, tl.max(b_s, 1)), b_m
         b_r = exp(b_mp - b_m)
@@ -159,7 +169,11 @@ def _nsa_compression_tle_consumer(
 
 @triton.jit
 def parallel_nsa_compression_fwd_tle_struct_kernel(
-    q, k, v, o, lse,
+    q,
+    k,
+    v,
+    o,
+    lse,
     scale,
     cu_seqlens,
     token_indices,
@@ -181,8 +195,12 @@ def parallel_nsa_compression_fwd_tle_struct_kernel(
     i_b, i_h = i_bh // H, i_bh % H
 
     if IS_VARLEN:
-        i_n, i_t = tl.load(token_indices + i_t * 2).to(tl.int32), tl.load(token_indices + i_t * 2 + 1).to(tl.int32)
-        bos, eos = tl.load(cu_seqlens + i_n).to(tl.int32), tl.load(cu_seqlens + i_n + 1).to(tl.int32)
+        i_n, i_t = tl.load(token_indices + i_t * 2).to(tl.int32), tl.load(
+            token_indices + i_t * 2 + 1
+        ).to(tl.int32)
+        bos, eos = tl.load(cu_seqlens + i_n).to(tl.int32), tl.load(
+            cu_seqlens + i_n + 1
+        ).to(tl.int32)
         T = eos - bos
         boc = tl.load(chunk_offsets + i_n).to(tl.int32)
     else:
@@ -227,10 +245,18 @@ def parallel_nsa_compression_fwd_tle_struct_kernel(
                 (
                     k_pipe.writer(),
                     v_pipe.writer(),
-                    k, v,
-                    boc, i_h, TC, NC,
-                    H, K, V,
-                    BC, BK, BV,
+                    k,
+                    v,
+                    boc,
+                    i_h,
+                    TC,
+                    NC,
+                    H,
+                    K,
+                    V,
+                    BC,
+                    BK,
+                    BV,
                     i_v,
                 ),
             ),
@@ -239,17 +265,29 @@ def parallel_nsa_compression_fwd_tle_struct_kernel(
                 (
                     k_pipe.reader(),
                     v_pipe.reader(),
-                    q, o, lse,
+                    q,
+                    o,
+                    lse,
                     scale,
-                    bos, i_t, i_h, G, HQ, K, NC,
+                    bos,
+                    i_t,
+                    i_h,
+                    G,
+                    HQ,
+                    K,
+                    NC,
                     i_v,
-                    BC, BK, BV, V,
+                    BC,
+                    BK,
+                    BV,
+                    V,
                 ),
             ),
         ],
         worker_num_warps=[NCONSUMER],
         worker_num_regs=[160],
     )
+
 
 # ===========================================================================
 # Forward kernel
