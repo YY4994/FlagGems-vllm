@@ -9,15 +9,13 @@ import torch
 import triton
 import triton.language as tl
 
-from flaggems_vllm.ops.FLA import (
-    autotune_cache_kwargs,
-    exp,
-    log,
-    parallel_attn_bwd_preprocess,
+from flaggems_vllm.ops.FLA.bwd_preprocess import parallel_attn_bwd_preprocess
+from flaggems_vllm.ops.FLA.index import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
     prepare_token_indices,
 )
+from flaggems_vllm.ops.FLA.triton_ops_helper import autotune_cache_kwargs, exp, log
 from flaggems_vllm.ops.FLA.utils import check_shared_mem, input_guard
 
 # ===========================================================================

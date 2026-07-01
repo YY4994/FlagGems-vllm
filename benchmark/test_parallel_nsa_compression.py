@@ -8,18 +8,20 @@ from benchmark.base import Benchmark
 
 class ParallelNSACompressionBenchmark(Benchmark):
     DEFAULT_DTYPES = [torch.bfloat16, torch.float16]
-    # 形状: (B, T, H, HQ, D)
+    # 形状: (B, T, H, HQ, D) — 参考 FLA benchmarks/ops/registry.py _nsa_default_shapes
     DEFAULT_SHAPES = [
-        # T 扫描 — 长序列到超长序列 (B=1, H=4, HQ=64, D=64)
-        (1, 8192, 4, 64, 64),
-        (1, 16384, 4, 64, 64),
-        (1, 32768, 4, 64, 64),
-        (1, 65536, 4, 64, 64),
-        # D 对比 — 宽/窄 head (B=1, T=16K, H=4, HQ=64)
-        (1, 16384, 4, 64, 64),
-        (1, 16384, 4, 64, 128),
-        # 多序列场景 (B=2, T=16K, H=4, HQ=64, D=64)
-        (2, 16384, 4, 64, 64),
+        # Small H regime
+        (1, 16384, 4, 64, 64),  # H4_S16K
+        # Main NSA workload
+        (1, 8192, 16, 256, 64),  # H16_S8K
+        (1, 16384, 16, 256, 64),  # H16_S16K
+        (1, 65536, 16, 256, 64),  # H16_S64K
+        # Large H
+        (1, 16384, 32, 512, 64),  # H32_S16K
+        # Head dimension
+        (1, 16384, 16, 256, 128),  # H16_D128
+        # 多序列
+        (4, 8192, 16, 256, 64),  # B4_H16_S8K
     ]
     DEFAULT_SHAPE_DESC = "B, T, H, HQ, D"
 

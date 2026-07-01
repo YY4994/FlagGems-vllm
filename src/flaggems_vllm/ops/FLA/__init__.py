@@ -11,6 +11,8 @@ from flaggems_vllm.ops.FLA.index import (
     prepare_chunk_offsets,
     prepare_token_indices,
 )
+from flaggems_vllm.ops.FLA.parallel_nsa import parallel_nsa
+from flaggems_vllm.ops.FLA.parallel_nsa_compression import parallel_nsa_compression
 from flaggems_vllm.ops.FLA.triton_ops_helper import autotune_cache_kwargs, exp, log
 
 __all__ = [
@@ -21,6 +23,8 @@ __all__ = [
     "fused_recurrent_gated_delta_rule_fwd",
     "log",
     "parallel_attn_bwd_preprocess",
+    "parallel_nsa",
+    "parallel_nsa_compression",
     "prepare_chunk_indices",
     "prepare_chunk_offsets",
     "prepare_token_indices",
