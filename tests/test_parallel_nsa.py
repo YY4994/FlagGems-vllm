@@ -47,7 +47,7 @@ def naive_nsa(
     Returns:
         o: outputs of shape ``[B, T, HQ, V]``.
     """
-    if 'head_first' in kwargs:
+    if "head_first" in kwargs:
         raise DeprecationWarning("head_first has been removed.")
     if scale is None:
         scale = k.shape[-1] ** -0.5
@@ -55,7 +55,9 @@ def naive_nsa(
     dtype = q.dtype
     G = q.shape[2] // k.shape[2]
     BS = block_size
-    k, v, block_indices = (repeat(x, 'b t h d -> b t (h g) d', g=G) for x in (k, v, block_indices))
+    k, v, block_indices = (
+        repeat(x, "b t h d -> b t (h g) d", g=G) for x in (k, v, block_indices)
+    )
     q, k, v = map(lambda x: x.float(), (q, k, v))
 
     o = torch.zeros_like(v)
@@ -63,16 +65,22 @@ def naive_nsa(
     if cu_seqlens is None:
         varlen = False
         B, T = q.shape[:2]
-        cu_seqlens = torch.cat([
-            block_indices.new_tensor(range(0, B * T, T)), block_indices.new_tensor([B * T]),
-        ])
+        cu_seqlens = torch.cat(
+            [
+                block_indices.new_tensor(range(0, B * T, T)),
+                block_indices.new_tensor([B * T]),
+            ]
+        )
 
     for i in range(len(cu_seqlens) - 1):
         if not varlen:
             q_b, k_b, v_b, i_b = q[i], k[i], v[i], block_indices[i]
         else:
             T = cu_seqlens[i + 1] - cu_seqlens[i]
-            q_b, k_b, v_b, i_b = map(lambda x: x[0][cu_seqlens[i]:cu_seqlens[i + 1]], (q, k, v, block_indices))
+            q_b, k_b, v_b, i_b = map(
+                lambda x: x[0][cu_seqlens[i] : cu_seqlens[i + 1]],
+                (q, k, v, block_indices),
+            )
 
         i_b = i_b.unsqueeze(-1) * BS + i_b.new_tensor(range(BS))
         i_b = i_b.view(T, block_indices.shape[2], -1).transpose(1, 2)
@@ -80,14 +88,20 @@ def naive_nsa(
             q_i = q_b[i_q] * scale
             i_i = i_b[i_q]
             k_i, v_i = map(
-                lambda x: x.gather(0, i_i.clamp(0, T - 1).unsqueeze(-1).expand(*i_i.shape, x.shape[-1])),
+                lambda x: x.gather(
+                    0, i_i.clamp(0, T - 1).unsqueeze(-1).expand(*i_i.shape, x.shape[-1])
+                ),
                 (k_b, v_b),
             )
-            attn = torch.einsum('h d, n h d -> n h', q_i, k_i).masked_fill(i_i > i_q, float('-inf')).softmax(0)
+            attn = (
+                torch.einsum("h d, n h d -> n h", q_i, k_i)
+                .masked_fill(i_i > i_q, float("-inf"))
+                .softmax(0)
+            )
             if not varlen:
-                o[i, i_q] = torch.einsum('n h, n h v -> h v', attn, v_i)
+                o[i, i_q] = torch.einsum("n h, n h v -> h v", attn, v_i)
             else:
-                o[0][cu_seqlens[i] + i_q] = torch.einsum('n h, n h v -> h v', attn, v_i)
+                o[0][cu_seqlens[i] + i_q] = torch.einsum("n h, n h v -> h v", attn, v_i)
 
     return o.to(dtype)
 
@@ -130,9 +144,11 @@ def assert_close(prefix, ref, tri, ratio, warning=False, err_atol=1e-6):
 
 @pytest.mark.parallel_nsa
 @pytest.mark.parametrize(
-    ('B', 'T', 'H', 'HQ', 'D', 'S', 'block_size', 'scale', 'dtype'),
+    ("B", "T", "H", "HQ", "D", "S", "block_size", "scale", "dtype"),
     [
-        pytest.param(*test, id="B{}-T{}-H{}-HQ{}-D{}-S{}-block_size{}-scale{}-{}".format(*test))
+        pytest.param(
+            *test, id="B{}-T{}-H{}-HQ{}-D{}-S{}-block_size{}-scale{}-{}".format(*test)
+        )
         for test in [
             (1, 63, 1, 16, 64, 16, 32, 1.0, torch.float16),
             (3, 111, 1, 32, 100, 16, 32, 1.0, torch.float16),
@@ -155,7 +171,7 @@ def test_parallel(
 ):
     """Compare FlagGems-vllm parallel_nsa with the naive reference (forward + backward)."""
     torch.manual_seed(42)
-    os.environ['TRITON_F32_DEFAULT'] = 'ieee'
+    os.environ["TRITON_F32_DEFAULT"] = "ieee"
 
     device = flaggems_vllm.device
 
@@ -169,17 +185,21 @@ def test_parallel(
         for t in range(T):
             for h in range(H):
                 i_i = torch.randperm(max(1, triton.cdiv(t, block_size)))[:S]
-                block_indices[b, t, h, :len(i_i)] = i_i
+                block_indices[b, t, h, : len(i_i)] = i_i
     block_indices = block_indices.sort(-1)[0]
 
-    ref = naive_nsa(q=q, k=k, v=v, block_indices=block_indices, block_size=block_size, scale=scale)
+    ref = naive_nsa(
+        q=q, k=k, v=v, block_indices=block_indices, block_size=block_size, scale=scale
+    )
     ref.backward(do)
     ref_dq, q.grad = q.grad.clone(), None
     ref_dk, k.grad = k.grad.clone(), None
     ref_dv, v.grad = v.grad.clone(), None
 
     tri = flaggems_vllm.parallel_nsa(
-        q=q, k=k, v=v,
+        q=q,
+        k=k,
+        v=v,
         block_indices=block_indices,
         block_counts=S,
         block_size=block_size,
@@ -198,9 +218,11 @@ def test_parallel(
 
 @pytest.mark.parallel_nsa
 @pytest.mark.parametrize(
-    ('H', 'HQ', 'D', 'S', 'block_size', 'cu_seqlens', 'dtype'),
+    ("H", "HQ", "D", "S", "block_size", "cu_seqlens", "dtype"),
     [
-        pytest.param(*test, id="H{}-HQ{}-D{}-S{}-block_size{}-cu_seqlens{}-{}".format(*test))
+        pytest.param(
+            *test, id="H{}-HQ{}-D{}-S{}-block_size{}-cu_seqlens{}-{}".format(*test)
+        )
         for test in [
             (1, 16, 64, 16, 32, [0, 15], torch.float16),
             (2, 32, 64, 16, 32, [0, 256, 500, 1000], torch.float16),
@@ -219,7 +241,7 @@ def test_parallel_varlen(
 ):
     """Compare FlagGems-vllm parallel_nsa with naive reference for variable-length sequences."""
     torch.manual_seed(42)
-    os.environ['TRITON_F32_DEFAULT'] = 'ieee'
+    os.environ["TRITON_F32_DEFAULT"] = "ieee"
 
     device = flaggems_vllm.device
 
@@ -238,7 +260,7 @@ def test_parallel_varlen(
         _, t = seq_indices[i]
         for h in range(H):
             i_i = torch.randperm(max(1, triton.cdiv(t, block_size)))[:S]
-            block_indices[0, i, h, :len(i_i)] = i_i
+            block_indices[0, i, h, : len(i_i)] = i_i
     block_indices = block_indices.sort(-1)[0]
 
     ref = naive_nsa(
@@ -268,7 +290,7 @@ def test_parallel_varlen(
     tri_dk, k.grad = k.grad.clone(), None
     tri_dv, v.grad = v.grad.clone(), None
 
-    assert_close('o', ref, tri, 0.004)
-    assert_close('dq', ref_dq, tri_dq, 0.005)
-    assert_close('dk', ref_dk, tri_dk, 0.005)
-    assert_close('dv', ref_dv, tri_dv, 0.005)
+    assert_close("o", ref, tri, 0.004)
+    assert_close("dq", ref_dq, tri_dq, 0.005)
+    assert_close("dk", ref_dk, tri_dk, 0.005)
+    assert_close("dv", ref_dv, tri_dv, 0.005)

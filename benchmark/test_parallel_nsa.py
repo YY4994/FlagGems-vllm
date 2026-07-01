@@ -11,17 +11,17 @@ class ParallelNSABenchmark(Benchmark):
     # 形状: (B, T, H, HQ, D) — 参考 FLA benchmarks/ops/registry.py _nsa_default_shapes
     DEFAULT_SHAPES = [
         # Group 1: Small H regime (低并行度)
-        (1, 16384, 4, 64, 64),     # H4_S16K, G=16
+        (1, 16384, 4, 64, 64),  # H4_S16K, G=16
         # Group 2: Main NSA workload (长上下文, memory throughput)
-        (1, 8192, 16, 256, 64),    # H16_S8K,  G=16
-        (1, 16384, 16, 256, 64),   # H16_S16K, G=16
-        (1, 65536, 16, 256, 64),   # H16_S64K, G=16
+        (1, 8192, 16, 256, 64),  # H16_S8K,  G=16
+        (1, 16384, 16, 256, 64),  # H16_S16K, G=16
+        (1, 65536, 16, 256, 64),  # H16_S64K, G=16
         # Group 3: Large H (接近真实模型)
-        (1, 16384, 32, 512, 64),   # H32_S16K, G=16
+        (1, 16384, 32, 512, 64),  # H32_S16K, G=16
         # Group 4: Head dimension 对比
         (1, 16384, 16, 256, 128),  # H16_D128, G=16
         # Group 6: 多序列训练场景
-        (4, 8192, 16, 256, 64),    # B4_H16_S8K
+        (4, 8192, 16, 256, 64),  # B4_H16_S8K
     ]
     DEFAULT_SHAPE_DESC = "B, T, H, HQ, D"
 
@@ -47,19 +47,26 @@ class ParallelNSABenchmark(Benchmark):
         q = torch.randn(B, T, HQ, D, device=device, dtype=dtype)
         k = torch.randn(B, T, H, D, device=device, dtype=dtype)
         v = torch.randn(B, T, H, D, device=device, dtype=dtype)
-        scale = D ** -0.5
+        scale = D**-0.5
 
         # Random block indices for benchmarking
-        block_indices = torch.randint(0, max(1, n_blocks), (B, T, H, S), device=device, dtype=torch.int32)
+        block_indices = torch.randint(
+            0, max(1, n_blocks), (B, T, H, S), device=device, dtype=torch.int32
+        )
 
         # Return positional args + kwargs dict as last element
-        return (q, k, v, {
-            "block_indices": block_indices,
-            "block_counts": S,
-            "block_size": block_size,
-            "scale": scale,
-            "cu_seqlens": None,
-        })
+        return (
+            q,
+            k,
+            v,
+            {
+                "block_indices": block_indices,
+                "block_counts": S,
+                "block_size": block_size,
+                "scale": scale,
+                "cu_seqlens": None,
+            },
+        )
 
 
 @pytest.mark.parallel_nsa
